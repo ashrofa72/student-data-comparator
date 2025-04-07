@@ -1,13 +1,28 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
+
+interface Student {
+  [key: string]: string | undefined;
+  'Course'?: string;
+  'Full Name'?: string;
+  'Exam Marks'?: string;
+  'Total'?: string;
+  'Classroom'?: string;
+}
+
+interface ReferenceStudent {
+  [key: string]: string | undefined;
+  'Corrected Name'?: string;
+  'Classroom'?: string;
+}
 
 export default function Home() {
   const [mainFile, setMainFile] = useState<File | null>(null);
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
-  const [processedData, setProcessedData] = useState<any[] | null>(null);
+  const [processedData, setProcessedData] = useState<Student[] | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState('');
   const downloadLinkRef = useRef<HTMLAnchorElement>(null);
@@ -38,153 +53,149 @@ export default function Home() {
     setError('');
 
     try {
-      // Process reference Excel file
       const referenceData = await readExcelFile(referenceFile);
-      
-      // Process main CSV file
       const mainData = await readCSVFile(mainFile);
-      
-      // Match data and add classrooms
       const matchedData = matchData(mainData, referenceData);
-      
       setProcessedData(matchedData);
     } catch (err) {
-      setError('Error processing files: ' + (err instanceof Error ? err.message : String(err)));
+      setError(`Error processing files: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const readExcelFile = (file: File): Promise<any[]> => {
+  const readExcelFile = async (file: File): Promise<ReferenceStudent[]> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => {
         try {
           const data = new Uint8Array(e.target?.result as ArrayBuffer);
           const workbook = XLSX.read(data, { type: 'array' });
-          const firstSheetName = workbook.SheetNames[0];
-          const worksheet = workbook.Sheets[firstSheetName];
-          const jsonData = XLSX.utils.sheet_to_json(worksheet);
-          resolve(jsonData);
+          const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+          resolve(XLSX.utils.sheet_to_json(worksheet) as ReferenceStudent[]);
         } catch (error) {
           reject(error);
         }
       };
-      reader.onerror = (error) => reject(error);
+      reader.onerror = reject;
       reader.readAsArrayBuffer(file);
     });
   };
 
-  const readCSVFile = (file: File): Promise<any[]> => {
+  const readCSVFile = async (file: File): Promise<Student[]> => {
     return new Promise((resolve, reject) => {
       Papa.parse(file, {
         header: true,
-        complete: (results) => resolve(results.data as any[]),
-        error: (error) => reject(error),
+        complete: (results) => {
+          const data = results.data as Record<string, any>[];
+          // Map only the required columns from the CSV
+          const filteredData = data.map(row => ({
+            'Course': row['Course'] || row['course'] || '',
+            'Full Name': row['Full Name'] || row['full name'] || row['Full name'] || '',
+            'Exam Marks': row['Exam Marks'] || row['exam marks'] || row['Exam marks'] || '',
+            'Total': row['Total'] || row['total'] || ''
+          }));
+          resolve(filteredData);
+        },
+        error: reject,
       });
     });
   };
 
-  const matchData = (mainData: any[], referenceData: any[]) => {
+  const matchData = (mainData: Student[], referenceData: ReferenceStudent[]): Student[] => {
     return mainData.map((student) => {
-      // Find matching student in reference data
       const matchedStudent = referenceData.find((refStudent) => {
-        // Case-insensitive comparison with trimmed strings
-        const correctedName = refStudent['Corrected Name'] || 
-                             refStudent['corrected name'] || 
-                             refStudent['Corrected name'] ||
-                             refStudent['Name'];
-        const fullName = student['Full Name'] || 
-                        student['full name'] || 
-                        student['Full name'] ||
-                        student['Name'];
-        
-        return correctedName?.toString().trim().toLowerCase() === fullName?.toString().trim().toLowerCase();
+        const correctedName = refStudent['Corrected Name']?.toLowerCase().trim();
+        const fullName = student['Full Name']?.toLowerCase().trim();
+        return correctedName === fullName;
       });
       
       return {
-        ...student,
-        Classroom: matchedStudent ? 
-          (matchedStudent['Classroom'] || 
-           matchedStudent['classroom'] || 
-           matchedStudent['Class'] ||
-           'Found but no classroom') : 
-          'Not Found',
+        'Course': student['Course'] || '',
+        'Full Name': student['Full Name'] || '',
+        'Exam Marks': student['Exam Marks'] || '',
+        'Total': student['Total'] || '',
+        'Classroom': matchedStudent ? 
+          (matchedStudent['classroom'] || 'Found but no classroom') : 
+          'Not Found'
       };
     });
   };
 
-  const downloadAsCSV = () => {
-    if (!processedData || !downloadLinkRef.current) return;
+  const sortedData = useMemo(() => {
+    if (!processedData) return null;
     
-    // Format data with proper encoding for Arabic and classroom values
-    const formattedData = processedData.map(student => {
-      const formattedStudent: Record<string, any> = {};
+    return [...processedData].sort((a, b) => {
+      const classroomA = a.Classroom?.toLowerCase() || '';
+      const classroomB = b.Classroom?.toLowerCase() || '';
       
-      // Process all fields to ensure proper handling
-      Object.entries(student).forEach(([key, value]) => {
-        // Handle classroom specially
-        if (key === 'Classroom' && 
-            value !== 'Not Found' && 
-            value !== 'Found but no classroom') {
-          formattedStudent[key] = `="${value}"`;
-        } 
-        // Ensure Arabic/Unicode text is preserved
-        else {
-          formattedStudent[key] = value;
-        }
-      });
+      if (classroomA === 'not found') return 1;
+      if (classroomB === 'not found') return -1;
+      if (classroomA === 'found but no classroom') return 1;
+      if (classroomB === 'found but no classroom') return -1;
       
-      return formattedStudent;
+      return classroomA.localeCompare(classroomB);
     });
+  }, [processedData]);
 
-    // Create CSV with proper encoding
-    const csvContent = Papa.unparse(formattedData, {
-      quotes: true,       // Force quotes around all strings
-      escapeChar: '"',    // Proper escaping for quotes
+  const downloadAsCSV = () => {
+    if (!sortedData || !downloadLinkRef.current) return;
+    
+    const formattedData = sortedData.map(student => ({
+      'Course': student['Course'] || '',
+      'Full Name': student['Full Name'] || '',
+      'Exam Marks': student['Exam Marks'] || '',
+      'Total': student['Total'] || '',
+      'Classroom': student['Classroom'] === 'Not Found' || 
+                  student['Classroom'] === 'Found but no classroom'
+        ? student['Classroom']
+        : `="${student['Classroom']}"`
+    }));
+
+    const csv = Papa.unparse(formattedData, {
+      quotes: true,
+      escapeChar: '"',
       delimiter: ','
     });
 
-    // Add UTF-8 BOM (Byte Order Mark) for Excel compatibility
-    const BOM = '\uFEFF';
-    const csvWithBOM = BOM + csvContent;
-    
-    // Create blob with explicit UTF-8 encoding
-    const blob = new Blob([csvWithBOM], { 
-      type: 'text/csv;charset=utf-8;' 
-    });
-    
-    // Create download link
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
+    
     downloadLinkRef.current.href = url;
-    downloadLinkRef.current.download = 'students_with_classrooms.csv';
+    downloadLinkRef.current.download = 'students_sorted_by_classroom.csv';
     downloadLinkRef.current.click();
     
-    // Clean up
     URL.revokeObjectURL(url);
   };
 
   const downloadAsExcel = () => {
-    if (!processedData || !downloadLinkRef.current) return;
+    if (!sortedData || !downloadLinkRef.current) return;
 
-    // Create workbook with Arabic text support
+    const excelData = sortedData.map(student => ({
+      'Course': student['Course'],
+      'Full Name': student['Full Name'],
+      'Exam Marks': student['Exam Marks'],
+      'Total': student['Total'],
+      'Classroom': student['Classroom']
+    }));
+
     const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet(processedData);
+    const ws = XLSX.utils.json_to_sheet(excelData);
     
-    // Set all columns to text format to preserve Arabic
-    if (!ws['!cols']) ws['!cols'] = [];
-    Object.keys(processedData[0]).forEach((_, i) => {
-      ws['!cols'] = ws['!cols'] || [];
-      ws['!cols'][i] = { wch: 20 }; // Set column width to 20 as an example
-    });
+    ws['!cols'] = [
+      { wch: 15 }, // Course
+      { wch: 25 }, // Full Name
+      { wch: 12 }, // Exam Marks
+      { wch: 10 }, // Total
+      { wch: 15 }  // Classroom
+    ];
     
     XLSX.utils.book_append_sheet(wb, ws, "Students");
     
-    // Generate Excel file with proper encoding
     const excelBuffer = XLSX.write(wb, { 
       bookType: 'xlsx', 
       type: 'array',
-      bookSST: true // Keep shared string table for better Unicode support
+      bookSST: true
     });
     
     const blob = new Blob([excelBuffer], { 
@@ -193,7 +204,7 @@ export default function Home() {
     
     const url = URL.createObjectURL(blob);
     downloadLinkRef.current.href = url;
-    downloadLinkRef.current.download = 'students_with_classrooms.xlsx';
+    downloadLinkRef.current.download = 'students_sorted_by_classroom.xlsx';
     downloadLinkRef.current.click();
     
     URL.revokeObjectURL(url);
@@ -212,7 +223,7 @@ export default function Home() {
         <div className="bg-white shadow rounded-lg p-6 mb-6">
           <div className="mb-6">
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Upload Main CSV File (with Full Name column)
+              Upload Main CSV File (must include: Course, Full Name, Exam Marks, Total)
             </label>
             <div className="mt-1 flex items-center">
               <input
@@ -236,7 +247,7 @@ export default function Home() {
 
           <div className="mb-6">
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Upload Reference Excel File (with Corrected Name and Classroom columns)
+              Upload Reference Excel File (must include: Corrected Name, Classroom)
             </label>
             <div className="mt-1 flex items-center">
               <input
@@ -279,13 +290,13 @@ export default function Home() {
           </div>
         </div>
 
-        {processedData && (
+        {sortedData && (
           <div className="bg-white shadow rounded-lg p-6">
             <div className="mb-4">
               <h2 className="text-lg font-medium text-gray-900">Processing Complete</h2>
               <p className="text-sm text-gray-600">
-                Found {processedData.length} students. {
-                  processedData.filter(s => s.Classroom !== 'Not Found' && s.Classroom !== 'Found but no classroom').length
+                Found {sortedData.length} students. {
+                  sortedData.filter(s => s.Classroom !== 'Not Found' && s.Classroom !== 'Found but no classroom').length
                 } matched with classrooms.
               </p>
             </div>
@@ -294,40 +305,35 @@ export default function Home() {
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
-                    {Object.keys(processedData[0]).map((key) => (
-                      <th
-                        key={key}
-                        scope="col"
-                        className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                      >
-                        {key}
-                      </th>
-                    ))}
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Course</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Full Name</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Exam Marks</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Classroom</th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {processedData.slice(0, 5).map((student, index) => (
+                  {sortedData.slice(0, 5).map((student, index) => (
                     <tr key={index}>
-                      {Object.values(student).map((value, i) => (
-                        <td
-                          key={i}
-                          className={`px-6 py-4 whitespace-nowrap text-sm ${
-                            value === 'Not Found' 
-                              ? 'text-red-500' 
-                              : value === 'Found but no classroom'
-                                ? 'text-yellow-500'
-                                : 'text-gray-500'
-                          }`}
-                        >
-                          {String(value)}
-                        </td>
-                      ))}
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{student['Course']}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{student['Full Name']}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{student['Exam Marks']}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{student['Total']}</td>
+                      <td className={`px-6 py-4 whitespace-nowrap text-sm ${
+                        student['Classroom'] === 'Not Found' 
+                          ? 'text-red-500' 
+                          : student['Classroom'] === 'Found but no classroom'
+                            ? 'text-yellow-500'
+                            : 'text-gray-500'
+                      }`}>
+                        {student['Classroom']}
+                      </td>
                     </tr>
                   ))}
-                  {processedData.length > 5 && (
+                  {sortedData.length > 5 && (
                     <tr>
-                      <td colSpan={Object.keys(processedData[0]).length} className="px-6 py-4 text-center text-sm text-gray-500">
-                        ... and {processedData.length - 5} more records
+                      <td colSpan={5} className="px-6 py-4 text-center text-sm text-gray-500">
+                        ... and {sortedData.length - 5} more records
                       </td>
                     </tr>
                   )}
