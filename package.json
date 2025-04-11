@@ -10,8 +10,8 @@
   },
   "dependencies": {
     "autoprefixer": "^10.4.21",
-    "jspdf": "^3.0.1",
-    "jspdf-autotable": "^5.0.2",
+    "jspdf": "^2.5.1",
+    "jspdf-autotable": "^3.5.28",
     "next": "15.2.4",
     "papaparse": "^5.5.2",
     "postcss": "^8.5.3",
